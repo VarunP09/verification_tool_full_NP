@@ -109,11 +109,12 @@ const getSubcategoryDefinition = (label) => {
    Study loading + highlighting helpers
 ------------------------------ */
 
-const ARTICLE_CSV_PATH = "/article_dataset_versions/new_filtered_news_300_700_words.csv";
+const ARTICLE_CSV_PATH = "/article_dataset_versions/fullHitNP.csv";
 const ANNOTATIONS_PATH = "/final_annotations.json";
 const ARTICLES_PER_PARTICIPANT = 5;
 const MAX_PER_ARTICLE = 3;
-const EXPECTED_ARTICLE_COUNT = 551;
+const EXPECTED_ARTICLE_COUNT = 364;
+const ARTICLE_USAGE_NODE = "articleUsageNP";
 const COMPLETION_CODE = "CH70G54C";
 
 const AGREEMENT_OPTIONS = [
@@ -322,70 +323,35 @@ function flattenAnnotationNode(node, inheritedParagraphIndex = null) {
 }
 
 function getAnnotationsForArticle(rawAnnotations, articleIndex, articleTitle) {
-  if (!rawAnnotations) return [];
-
-  // Common format 1: array with one record per article.
-  if (Array.isArray(rawAnnotations)) {
-    const direct = rawAnnotations[articleIndex];
-
-    if (direct && typeof direct === "object") {
-      if (Array.isArray(direct.annotations)) {
-        return flattenAnnotationNode(direct.annotations);
-      }
-      if (Array.isArray(direct.llm_annotations)) {
-        return flattenAnnotationNode(direct.llm_annotations);
-      }
-      if (Array.isArray(direct.final_annotations)) {
-        return flattenAnnotationNode(direct.final_annotations);
-      }
-
-      const directFlattened = flattenAnnotationNode(direct);
-      if (directFlattened.length > 0) return directFlattened;
-    }
-
-    // Common format 2: flat list where each annotation stores its article index.
-    const filtered = rawAnnotations.filter((entry) => {
-      if (!entry || typeof entry !== "object") return false;
-      const idx =
-        entry.article_index ??
-        entry.articleIndex ??
-        entry.article_id ??
-        entry.articleId;
-      return Number(idx) === articleIndex;
-    });
-
-    if (filtered.length > 0) return flattenAnnotationNode(filtered);
+  // Filtered CSV indices differ from the original JSON indices. Match by title,
+  // never by the subset row number. The supplied JSON is an array of articles.
+  if (!Array.isArray(rawAnnotations)) {
+    throw new Error("final_annotations.json must contain an array of articles.");
   }
 
-  // Common format 3: object keyed by article index.
-  if (typeof rawAnnotations === "object") {
-    const containers = [
-      rawAnnotations,
-      rawAnnotations.articles,
-      rawAnnotations.annotations,
-      rawAnnotations.final_annotations,
-    ].filter(Boolean);
-
-    for (const container of containers) {
-      const byIndex =
-        container?.[articleIndex] ??
-        container?.[String(articleIndex)];
-
-      if (byIndex !== undefined) {
-        if (Array.isArray(byIndex?.annotations)) {
-          return flattenAnnotationNode(byIndex.annotations);
-        }
-        return flattenAnnotationNode(byIndex);
-      }
-    }
-
-    // Fallback: object keyed by exact article title.
-    if (articleTitle && rawAnnotations[articleTitle] !== undefined) {
-      return flattenAnnotationNode(rawAnnotations[articleTitle]);
-    }
+  const matches = rawAnnotations.filter((article) => article?.title === articleTitle);
+  if (matches.length === 0) {
+    throw new Error(`No annotations found for article: ${articleTitle}`);
   }
 
-  return [];
+  const annotationLists = matches.map((article) =>
+    flattenAnnotationNode(article.annotations)
+  );
+  // Duplicate titles in the supplied NP set have equivalent paragraph labels.
+  // Reject conflicting matches instead of silently attaching a different label.
+  const signature = (annotations) => JSON.stringify(
+    annotations.map((annotation) => [
+      annotation.paragraph_index,
+      normalizeAnnotationLabel(annotation.category),
+      normalizeAnnotationLabel(annotation.subcategory),
+    ]).sort((a, b) => a[0] - b[0])
+  );
+  if (annotationLists.some((annotations) =>
+    signature(annotations) !== signature(annotationLists[0])
+  )) {
+    throw new Error(`Conflicting annotations for duplicate title: ${articleTitle}`);
+  }
+  return annotationLists[0];
 }
 
 
@@ -543,7 +509,7 @@ function prepareStudyArticle(csvRow, articleIndex, rawAnnotations) {
 }
 
 async function assignRandomArticleIndices(totalArticles) {
-  const usageRef = ref(database, "articleUsage");
+  const usageRef = ref(database, ARTICLE_USAGE_NODE);
   let assignedIndices = [];
 
   const result = await runTransaction(usageRef, (current) => {
@@ -671,31 +637,32 @@ function ToolMain() {
         }
 
         if (csvRows.length !== EXPECTED_ARTICLE_COUNT) {
-          console.warn(
-            `Expected ${EXPECTED_ARTICLE_COUNT} articles, but loaded ${csvRows.length}. articleUsage will follow the loaded CSV length.`
-          );
-        }
-
-        // Atomically reserve up to five random articles that have each been
-        // assigned fewer than three times. The articleUsage counters are
-        // incremented immediately when this participant enters the task.
-        const assignedIndices = await assignRandomArticleIndices(csvRows.length);
-
-        if (assignedIndices.length === 0) {
           throw new Error(
-            "This task is full"
+            `Expected ${EXPECTED_ARTICLE_COUNT} articles in fullHitNP.csv, but loaded ${csvRows.length}.`
           );
         }
 
-        const preparedArticles = assignedIndices.map((articleIndex) =>
-          prepareStudyArticle(csvRows[articleIndex], articleIndex, rawAnnotations)
+        // Validate the NP-only dataset before reserving any assignment counters.
+        const eligibleArticles = csvRows.map((row, index) =>
+          prepareStudyArticle(row, index, rawAnnotations)
         );
-
-        if (preparedArticles.some((article) => article.annotations.length === 0)) {
-          console.warn(
-            "At least one assigned article has no annotations in final_annotations.json."
+        const invalidArticle = eligibleArticles.find(
+          (article) => !article.wholeArticleNoPolarizing
+        );
+        if (invalidArticle) {
+          throw new Error(
+            `Article is not marked No Polarizing Language in every non-empty paragraph: ${invalidArticle.title}`
           );
         }
+        // An effect cancelled during loading must not reserve articles.
+        if (cancelled) return;
+
+        // NP counters use subset indices and are independent of the original set.
+        const assignedIndices = await assignRandomArticleIndices(csvRows.length);
+        if (assignedIndices.length === 0) {
+          throw new Error("This task is full");
+        }
+        const preparedArticles = assignedIndices.map((index) => eligibleArticles[index]);
 
         if (!cancelled) {
           // Keep the randomized assignment order returned by Firebase.
@@ -987,6 +954,7 @@ function ToolMain() {
         totalAnnotationsReviewed: totalReviewAnnotations,
         attentionCheckResponses,
         completionCode: COMPLETION_CODE,
+        articleDataset: "fullHitNP.csv",
         articlePresentationOrder: trainingArticles.map((article, position) => ({
           position: position + 1,
           articleIndex: article.id,
