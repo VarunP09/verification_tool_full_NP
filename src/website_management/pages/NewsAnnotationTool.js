@@ -106,7 +106,7 @@ const getSubcategoryDefinition = (label) => {
 };
 
 /* -----------------------------
-   Training-set loading + highlighting helpers
+   Study loading + highlighting helpers
 ------------------------------ */
 
 const ARTICLE_CSV_PATH = "/article_dataset_versions/new_filtered_news_300_700_words.csv";
@@ -114,9 +114,51 @@ const ANNOTATIONS_PATH = "/final_annotations.json";
 const ARTICLES_PER_PARTICIPANT = 5;
 const MAX_PER_ARTICLE = 3;
 const EXPECTED_ARTICLE_COUNT = 551;
-const PASSING_PERCENTAGE = 0.75;
-const SUCCESS_CODE = "CK0TZ6YK";
-const FAIL_CODE = "CK0TZ6YK";
+const COMPLETION_CODE = "CH70G54C";
+
+const AGREEMENT_OPTIONS = [
+  "Strongly disagree",
+  "Disagree",
+  "Somewhat disagree",
+  "Neither agree nor disagree",
+  "Somewhat agree",
+  "Agree",
+  "Strongly agree",
+];
+
+function isAgreementResponse(value) {
+  return Number.isInteger(value) && value >= 1 && value <= 7;
+}
+
+function AgreementScale({ name, statement, value, onChange, disabled }) {
+  return (
+    <fieldset disabled={disabled} className="text-left">
+      <legend className="mb-3 font-semibold text-gray-900">
+        Please indicate how much you agree or disagree with the following statement:
+      </legend>
+      <p className="mb-4 italic text-gray-900">{statement}</p>
+      <div className="space-y-2">
+        {AGREEMENT_OPTIONS.map((label, index) => (
+          <label
+            key={label}
+            className="flex items-center gap-3 rounded-md border border-gray-200 bg-white px-4 py-3 text-gray-800"
+          >
+            <input
+              type="radio"
+              name={name}
+              value={index + 1}
+              checked={value === index + 1}
+              onChange={() => onChange(index + 1)}
+              required
+              className="h-4 w-4"
+            />
+            <span>{index + 1}. {label}</span>
+          </label>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
 
 const ATTENTION_CHECKS = [
   {
@@ -156,7 +198,7 @@ const ATTENTION_CHECKS = [
 /**
  * Returns a new array with the article order randomized.
  * Fisher-Yates ensures every ordering is equally likely.
- * This runs once when the participant's training set loads,
+ * This runs once when the participant's article set loads,
  * so the order remains fixed for the rest of that session.
  */
 function shuffleArticles(items) {
@@ -491,7 +533,9 @@ function prepareStudyArticle(csvRow, articleIndex, rawAnnotations) {
     title,
     body,
     paragraphRanges,
-    regularAnnotationCount: annotations.length,
+    regularAnnotationCount: annotations.filter(
+      (annotation) => !annotation.wholeArticleNoPolarizing
+    ).length,
     falseAnnotationCount: 0,
     annotations,
     wholeArticleNoPolarizing,
@@ -547,20 +591,8 @@ async function assignRandomArticleIndices(totalArticles) {
   return assignedIndices;
 }
 
-function calculateScore(articles, responses) {
-  return articles.reduce(
-    (total, article) =>
-      total +
-      article.annotations.reduce((articleScore, annotation) => {
-        if (responses[annotation.id] !== "agree") return articleScore;
-        return articleScore + (annotation.annotationType === "false" ? -1 : 1);
-      }, 0),
-    0
-  );
-}
-
 /* -----------------------------
-   Main Tool (full-article training verification)
+   Main Tool (full-study verification)
 ------------------------------ */
 
 function ToolMain() {
@@ -577,6 +609,7 @@ function ToolMain() {
   const [submitError, setSubmitError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState(null);
+  const [postTaskConfidence, setPostTaskConfidence] = useState(null);
 
   const [showAttentionCheck, setShowAttentionCheck] = useState(false);
   const [attentionCheckResponses, setAttentionCheckResponses] = useState({});
@@ -694,12 +727,7 @@ function ToolMain() {
     (sum, article) => sum + article.annotations.length,
     0
   );
-  const totalPossiblePoints = trainingArticles.reduce(
-    (sum, article) => sum + article.regularAnnotationCount,
-    0
-  );
   const answeredCount = Object.keys(responses).length;
-  const score = calculateScore(trainingArticles, responses);
 
   const selectedAnnotation =
     currentArticle?.annotations.find(
@@ -888,13 +916,6 @@ function ToolMain() {
         .filter((annotation) => !!responseMap[annotation.id])
         .map((annotation) => {
           const response = responseMap[annotation.id];
-          const pointChange =
-            response === "agree"
-              ? annotation.annotationType === "false"
-                ? -1
-                : 1
-              : 0;
-
           return {
             articleIndex: article.id,
             articleTitle: article.title,
@@ -905,7 +926,14 @@ function ToolMain() {
             category: annotation.category,
             subcategory: annotation.subcategory,
             response,
-            pointChange,
+            ...(annotation.wholeArticleNoPolarizing
+              ? {
+                  responseType: "likert_1_7",
+                  responseLabel: AGREEMENT_OPTIONS[response - 1],
+                  wholeArticleNoPolarizing: true,
+                  statement: "This passage contains no polarizing language.",
+                }
+              : {}),
           };
         })
     );
@@ -921,101 +949,33 @@ function ToolMain() {
     setSubmitError("");
   }
 
-  async function submitArticleQuestions() {
+  function submitArticleQuestions() {
     if (!bothArticleQuestionsAnswered) {
       setSubmitError("Please answer both questions before continuing.");
       return;
     }
 
-    const incorrectChecks = ATTENTION_CHECKS.filter(
-      (check) =>
-        attentionCheckResponses[check.id] !== check.correctAnswer
-    );
-
-    if (incorrectChecks.length === 0) {
-      setShowAttentionCheck(false);
-      setSubmitError("");
-      setCurrentArticleIndex((previous) => previous + 1);
-      window.scrollTo({ top: 0, behavior: "smooth" });
-      return;
-    }
-
-    const scoreAtFailure = calculateScore(trainingArticles, responses);
-    const percentageAtFailure =
-      totalPossiblePoints > 0 ? scoreAtFailure / totalPossiblePoints : 0;
-
-    const failureResult = {
-      score: scoreAtFailure,
-      total: totalPossiblePoints,
-      percentage: percentageAtFailure,
-      passed: false,
-      failedAttentionCheck: true,
-      completionCode: FAIL_CODE,
-      saving: true,
-      saveError: "",
-    };
-
-    setSubmitting(true);
-    setResult(failureResult);
-
-    try {
-      await push(ref(database, "trainingSubmissions"), {
-        score: scoreAtFailure,
-        totalPossible: totalPossiblePoints,
-        totalAnnotationsReviewed: totalReviewAnnotations,
-        totalAnnotationsAnswered: answeredCount,
-        percentage: percentageAtFailure,
-        passed: false,
-        failedAttentionCheck: true,
-        completionCode: FAIL_CODE,
-        failedAttentionCheckDetails: incorrectChecks.map((check) => ({
-          questionId: check.id,
-          question: check.question,
-          selectedAnswer: attentionCheckResponses[check.id],
-          correctAnswer: check.correctAnswer,
-        })),
-        attentionCheckResponses,
-        articlePresentationOrder: trainingArticles.map((article, position) => ({
-          position: position + 1,
-          articleIndex: article.id,
-          articleTitle: article.title,
-        })),
-        responses: buildResponseDetails(responses),
-        timestamp: Date.now(),
-      });
-
-      setResult((previous) =>
-        previous ? { ...previous, saving: false, saveError: "" } : previous
-      );
-    } catch (error) {
-      setResult((previous) =>
-        previous
-          ? {
-              ...previous,
-              saving: false,
-              saveError:
-                "Your result could not be saved. Please keep this page open and contact the researcher.",
-            }
-          : previous
-      );
-    } finally {
-      setSubmitting(false);
-    }
+    // Record attention-check answers with the final submission; this full HIT
+    // has no qualification score or early pass/fail screen.
+    setShowAttentionCheck(false);
+    setSubmitError("");
+    setCurrentArticleIndex((previous) => previous + 1);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  async function finishTraining() {
+  async function finishTask() {
+    if (submitting) return;
     if (!currentArticleComplete || answeredCount !== totalReviewAnnotations) {
       setSubmitError(
-        "Please answer every highlighted annotation before finishing the training."
+        "Please answer every article response before submitting the task."
       );
       return;
     }
 
-    const finalScore = calculateScore(trainingArticles, responses);
-    const percentage =
-      totalPossiblePoints > 0 ? finalScore / totalPossiblePoints : 0;
-    const passed = percentage >= PASSING_PERCENTAGE;
-    const completionCode = passed ? SUCCESS_CODE : FAIL_CODE;
+    if (!isAgreementResponse(postTaskConfidence)) {
+      setSubmitError("Please answer the final confidence question before submitting.");
+      return;
+    }
 
     const responseDetails = buildResponseDetails(responses);
 
@@ -1023,34 +983,26 @@ function ToolMain() {
       setSubmitting(true);
       setSubmitError("");
 
-      await push(ref(database, "trainingSubmissions"), {
-        score: finalScore,
-        totalPossible: totalPossiblePoints,
+      await push(ref(database, "fullHitSubmissions"), {
         totalAnnotationsReviewed: totalReviewAnnotations,
-        percentage,
-        passed,
-        failedAttentionCheck: false,
         attentionCheckResponses,
-        completionCode,
+        completionCode: COMPLETION_CODE,
         articlePresentationOrder: trainingArticles.map((article, position) => ({
           position: position + 1,
           articleIndex: article.id,
           articleTitle: article.title,
         })),
         responses: responseDetails,
+        surveyResponses: {
+          postTaskConfidence,
+          postTaskConfidenceLabel: AGREEMENT_OPTIONS[postTaskConfidence - 1],
+          postTaskConfidenceStatement:
+            "I am confident in my ability to accurately identify persuasive, emotionally charged, or inflammatory language in news articles.",
+        },
         timestamp: Date.now(),
       });
 
-      setResult({
-        score: finalScore,
-        total: totalPossiblePoints,
-        percentage,
-        passed,
-        failedAttentionCheck: false,
-        completionCode,
-        saving: false,
-        saveError: "",
-      });
+      setResult({ completed: true });
     } catch (error) {
       setSubmitError(
         "Your answers could not be saved. Please check your connection and try again."
@@ -1092,7 +1044,7 @@ function ToolMain() {
       return;
     }
 
-    finishTraining();
+    finishTask();
   }
 
   if (loading) {
@@ -1100,7 +1052,7 @@ function ToolMain() {
       <div className="min-h-screen w-full flex items-center justify-center bg-gray-100">
         <div className="bg-white rounded-xl shadow p-8 text-center">
           <h1 className="text-2xl font-bold text-gray-900 mb-2">
-            Loading Training Set
+            Loading Articles
           </h1>
           <p className="text-gray-600">
             Please wait while the articles and annotations are prepared.
@@ -1125,77 +1077,22 @@ function ToolMain() {
 
   if (result) {
     return (
-      <div className="min-h-screen w-full flex items-center justify-center bg-gray-100">
-        <div
-          className={`w-full max-w-2xl bg-white rounded-xl shadow p-8 border text-center ${
-            result.passed ? "border-green-300" : "border-red-300"
-          }`}
-        >
-          <h1
-            className={`text-3xl font-extrabold mb-4 ${
-              result.passed ? "text-green-700" : "text-red-700"
-            }`}
-          >
-            {result.passed ? "Training Passed" : "Training Not Passed"}
+      <div className="min-h-screen w-full flex items-center justify-center bg-gray-100 p-4">
+        <div className="w-full max-w-2xl bg-white rounded-xl shadow p-8 text-center">
+          <h1 className="text-3xl font-bold text-gray-900 mb-6">
+            Thank you for completing this task!
           </h1>
-
-          {result.failedAttentionCheck ? (
-            <p className="text-lg text-gray-800 mb-6">
-              You did not meet the requirements for this training.
-            </p>
-          ) : (
-            <>
-              <p className="text-lg text-gray-800 mb-2">
-                Your score was{" "}
-                <strong>
-                  {result.score} / {result.total}
-                </strong>{" "}
-                ({(result.percentage * 100).toFixed(1)}%).
-              </p>
-
-              <p className="text-gray-700 mb-6">
-                {result.passed
-                  ? "You met the required score of 80% or higher."
-                  : "You scored below the required 80% threshold."}
-              </p>
-            </>
-          )}
-
-          {result.saving && (
-            <p className="mb-4 text-sm font-semibold text-blue-700">
-              Saving your result...
-            </p>
-          )}
-
-          {result.saveError && (
-            <p className="mb-4 rounded border border-red-300 bg-red-50 p-3 text-sm font-semibold text-red-700">
-              {result.saveError}
-            </p>
-          )}
-
-          {result.passed && (
-            <p className="mb-5 rounded-lg border border-green-200 bg-green-50 p-4 text-lg font-semibold text-green-800">
-              You successfully qualified, great job! Thank you for doing such a good job.
-            </p>
-          )}
-
-          <p className="text-gray-700 mb-3">
-            Copy and paste this completion code into Prolific:
-          </p>
-
-          <div
-            className={`text-lg font-mono p-4 rounded border border-dashed mb-4 ${
-              result.passed
-                ? "bg-green-50 border-green-400"
-                : "bg-red-50 border-red-400"
-            }`}
+          <button
+            type="button"
+            onClick={() =>
+              window.location.assign(
+                `https://app.prolific.com/submissions/complete?cc=${COMPLETION_CODE}`
+              )
+            }
+            className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded"
           >
-            {result.completionCode}
-          </div>
-
-          <p className="text-sm text-gray-500">
-            You may now close this window or return to the task page.
-          </p>
+            Return to Prolific
+          </button>
         </div>
       </div>
     );
@@ -1526,59 +1423,18 @@ function ToolMain() {
 
                   return (
                     <div className="mt-8 rounded-xl border border-gray-200 bg-gray-50 p-5 text-center">
-                      <h3 className="text-lg font-bold text-gray-900 mb-3">
-                        Article-Level Verification
-                      </h3>
-                      <p className="text-gray-700 mb-5"> 
-                        Do you think that there is no<strong> polarizing language</strong> anywhere in this article?
-                      </p>
-
-                      <div className="flex justify-center gap-4">
-                        <Button
-                          onClick={() =>
-                            setResponses((previous) => ({
-                              ...previous,
-                              [noPolarizingAnnotation.id]: "disagree",
-                            }))
-                          }
-                          disabled={!!existingResponse}
-                          className={
-                            existingResponse === "disagree"
-                              ? "bg-red-600 text-white px-5 py-2 rounded"
-                              : existingResponse
-                              ? "bg-gray-300 text-gray-500 px-5 py-2 rounded cursor-not-allowed"
-                              : "bg-red-500 hover:bg-red-600 text-white px-5 py-2 rounded"
-                          }
-                        >
-                          Disagree
-                        </Button>
-
-                        <Button
-                          onClick={() =>
-                            setResponses((previous) => ({
-                              ...previous,
-                              [noPolarizingAnnotation.id]: "agree",
-                            }))
-                          }
-                          disabled={!!existingResponse}
-                          className={
-                            existingResponse === "agree"
-                              ? "bg-emerald-700 text-white px-5 py-2 rounded"
-                              : existingResponse
-                              ? "bg-gray-300 text-gray-500 px-5 py-2 rounded cursor-not-allowed"
-                              : "bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2 rounded"
-                          }
-                        >
-                          Agree
-                        </Button>
-                      </div>
-
-                      {existingResponse && (
-                        <p className="mt-3 text-sm font-semibold text-gray-600">
-                          Response recorded:{" "}
-                          {existingResponse === "agree" ? "Agree" : "Disagree"}
-                        </p>
-                      )}
+                      <AgreementScale
+                        name={`no-polarizing-${currentArticle.id}`}
+                        statement="This passage contains no polarizing language."
+                        value={existingResponse}
+                        onChange={(value) =>
+                          setResponses((previous) => ({
+                            ...previous,
+                            [noPolarizingAnnotation.id]: value,
+                          }))
+                        }
+                        disabled={submitting}
+                      />
                     </div>
                   );
                 })()}
@@ -1619,6 +1475,22 @@ function ToolMain() {
                   This article: {currentArticleAnsweredCount} of{" "}
                   {currentArticle.annotations.length} annotations answered
                 </p>
+
+                {currentArticleIndex === trainingArticles.length - 1 &&
+                  currentArticleComplete && answeredCount === totalReviewAnnotations && (
+                    <div className="mb-6 rounded-xl border border-gray-200 bg-gray-50 p-5">
+                      <AgreementScale
+                        name="post-task-confidence"
+                        statement="I am confident in my ability to accurately identify persuasive, emotionally charged, or inflammatory language in news articles."
+                        value={postTaskConfidence}
+                        onChange={(value) => {
+                          setPostTaskConfidence(value);
+                          setSubmitError("");
+                        }}
+                        disabled={submitting}
+                      />
+                    </div>
+                  )}
 
                 {submitError && (
                   <p className="mb-3 text-sm font-semibold text-red-600">
@@ -1698,9 +1570,15 @@ function ToolMain() {
                 ) : (
                   <Button
                     onClick={goToNextArticle}
-                    disabled={!currentArticleComplete || submitting}
+                    disabled={
+                      !currentArticleComplete || submitting ||
+                      (currentArticleIndex === trainingArticles.length - 1 &&
+                        !isAgreementResponse(postTaskConfidence))
+                    }
                     className={
-                      currentArticleComplete && !submitting
+                      currentArticleComplete && !submitting &&
+                      (currentArticleIndex < trainingArticles.length - 1 ||
+                        isAgreementResponse(postTaskConfidence))
                         ? "bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded"
                         : "bg-gray-400 text-white px-6 py-2 rounded cursor-not-allowed"
                     }
@@ -1709,7 +1587,7 @@ function ToolMain() {
                       ? "Saving..."
                       : currentArticleIndex < trainingArticles.length - 1
                       ? "Next Article"
-                      : "Finish Training"}
+                      : "Submit"}
                   </Button>
                 )}
               </div>
@@ -1812,7 +1690,7 @@ function ToolMain() {
         <h3 className="text-lg font-bold mb-3">Instructions</h3>
 
         <p className="text-sm ml-3 text-left">
-          You will review every highlighted annotation in the training set.
+          You will review the annotations in your assigned articles.
         </p>
 
         <div className="h-4" />
@@ -1836,10 +1714,6 @@ function ToolMain() {
           <li>
             Some proposed annotations may be incorrect, so evaluate each one
             carefully rather than agreeing automatically.
-          </li>
-          <li>
-            You must score <strong>80% or higher overall</strong> to reach the
-            success screen.
           </li>
         </ol>
 
