@@ -568,6 +568,7 @@ function ToolMain({ prolificId }) {
   const [trainingArticles, setTrainingArticles] = useState([]);
   const [currentArticleIndex, setCurrentArticleIndex] = useState(0);
   const [responses, setResponses] = useState({});
+  const [polarizingFollowUps, setPolarizingFollowUps] = useState({});
   const [selectedAnnotationId, setSelectedAnnotationId] = useState(null);
 
   const [loading, setLoading] = useState(true);
@@ -701,10 +702,33 @@ function ToolMain({ prolificId }) {
       (annotation) => annotation.id === selectedAnnotationId
     ) || null;
 
+  function isArticleFollowUpComplete(article) {
+    if (!article.wholeArticleNoPolarizing) return true;
+    const answer = polarizingFollowUps[article.id];
+    return answer?.response === "no" ||
+      (answer?.response === "yes" && !!answer.explanation?.trim());
+  }
+
+  function updatePolarizingFollowUp(articleId, changes) {
+    if (submitting) return;
+    setPolarizingFollowUps((previous) => ({
+      ...previous,
+      [articleId]: {
+        response: "",
+        explanation: "",
+        ...previous[articleId],
+        ...changes,
+        ...(changes.response === "no" ? { explanation: "" } : {}),
+      },
+    }));
+    setSubmitError("");
+  }
+
   const currentArticleComplete =
     prolificId.trim().length > 0 &&
     !!currentArticle &&
-    currentArticle.annotations.every((annotation) => responses[annotation.id]);
+    currentArticle.annotations.every((annotation) => responses[annotation.id]) &&
+    isArticleFollowUpComplete(currentArticle);
 
   const currentArticleAnsweredCount = currentArticle
     ? currentArticle.annotations.filter((annotation) => responses[annotation.id])
@@ -900,6 +924,12 @@ function ToolMain({ prolificId }) {
                   responseLabel: AGREEMENT_OPTIONS[response - 1],
                   wholeArticleNoPolarizing: true,
                   statement: "This passage contains no polarizing language.",
+                  polarizingLanguageFollowUp: {
+                    response: polarizingFollowUps[article.id]?.response || "",
+                    explanation: polarizingFollowUps[article.id]?.response === "yes"
+                      ? (polarizingFollowUps[article.id]?.explanation || "").trim()
+                      : "",
+                  },
                 }
               : {}),
           };
@@ -918,6 +948,10 @@ function ToolMain({ prolificId }) {
   }
 
   function submitArticleQuestions() {
+    if (!currentArticleComplete) {
+      setSubmitError("Please complete the article questions and explain any Yes response before continuing.");
+      return;
+    }
     if (!bothArticleQuestionsAnswered) {
       setSubmitError("Please answer both questions before continuing.");
       return;
@@ -937,9 +971,10 @@ function ToolMain({ prolificId }) {
       setSubmitError("Please enter your Prolific ID before submitting.");
       return;
     }
-    if (!currentArticleComplete || answeredCount !== totalReviewAnnotations) {
+    if (!currentArticleComplete || answeredCount !== totalReviewAnnotations ||
+        !trainingArticles.every(isArticleFollowUpComplete)) {
       setSubmitError(
-        "Please answer every article response before submitting the task."
+        "Please complete every article question and explain any Yes response before submitting."
       );
       return;
     }
@@ -989,7 +1024,7 @@ function ToolMain({ prolificId }) {
   function goToNextArticle() {
     if (!currentArticleComplete) {
       setSubmitError(
-        "Please answer every highlighted annotation in this article before continuing."
+        "Please complete the article questions and explain any Yes response before continuing."
       );
       return;
     }
@@ -1394,6 +1429,7 @@ function ToolMain({ prolificId }) {
                     (annotation) => annotation.wholeArticleNoPolarizing
                   );
                   const existingResponse = responses[noPolarizingAnnotation.id];
+                  const followUp = polarizingFollowUps[currentArticle.id] || {};
 
                   return (
                     <div className="mt-8 rounded-xl border border-gray-200 bg-gray-50 p-5 text-center">
@@ -1409,6 +1445,50 @@ function ToolMain({ prolificId }) {
                         }
                         disabled={submitting}
                       />
+                      <fieldset disabled={submitting} className="mt-6 text-left">
+                        <legend className="mb-3 font-semibold text-gray-900">
+                          Did you notice any potentially polarizing language in this article? If yes,
+                          please identify the relevant words or passage and briefly explain why you
+                          consider the language polarizing.
+                        </legend>
+                        <div className="flex gap-6">
+                          {["yes", "no"].map((option) => (
+                            <label key={option} className="flex items-center gap-2 text-gray-800">
+                              <input
+                                type="radio"
+                                name={`polarizing-follow-up-${currentArticle.id}`}
+                                value={option}
+                                checked={followUp.response === option}
+                                onChange={() => updatePolarizingFollowUp(currentArticle.id, { response: option })}
+                                required
+                                className="h-4 w-4"
+                              />
+                              <span>{option === "yes" ? "Yes" : "No"}</span>
+                            </label>
+                          ))}
+                        </div>
+                        {followUp.response === "yes" && (
+                          <div className="mt-4">
+                            <label
+                              htmlFor={`polarizing-explanation-${currentArticle.id}`}
+                              className="mb-2 block font-semibold text-gray-900"
+                            >
+                              Relevant words or passage and explanation (required)
+                            </label>
+                            <textarea
+                              id={`polarizing-explanation-${currentArticle.id}`}
+                              name={`polarizing-explanation-${currentArticle.id}`}
+                              rows={4}
+                              value={followUp.explanation || ""}
+                              onChange={(event) => updatePolarizingFollowUp(currentArticle.id, {
+                                explanation: event.target.value,
+                              })}
+                              required
+                              className="w-full rounded-md border border-gray-300 bg-white p-3 text-gray-900"
+                            />
+                          </div>
+                        )}
+                      </fieldset>
                     </div>
                   );
                 })()}
@@ -1530,9 +1610,9 @@ function ToolMain({ prolificId }) {
                     <div className="mt-6 flex justify-center">
                       <Button
                         onClick={submitArticleQuestions}
-                        disabled={!bothArticleQuestionsAnswered || submitting}
+                        disabled={!bothArticleQuestionsAnswered || !currentArticleComplete || submitting}
                         className={
-                          bothArticleQuestionsAnswered && !submitting
+                          bothArticleQuestionsAnswered && currentArticleComplete && !submitting
                             ? "bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded"
                             : "bg-gray-400 text-white px-6 py-2 rounded cursor-not-allowed"
                         }
