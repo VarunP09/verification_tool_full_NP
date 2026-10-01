@@ -1744,48 +1744,44 @@ function ToolMain({ prolificId }) {
         <h3 className="text-lg font-bold mb-3">Instructions</h3>
 
         <p className="text-sm ml-3 text-left">
-          You will review the annotations in your assigned articles.
+          Read each assigned article and answer the two questions below it.
         </p>
 
         <div className="h-4" />
 
         <ol className="list-decimal text-left ml-5 list-inside text-sm space-y-3">
           <li>
-            Read the <strong>entire article</strong> shown on the screen.
+            Read the <strong>entire article</strong> carefully.
           </li>
           <li>
-            Click each <strong>yellow highlighted passage</strong> to view its
-            category and subcategory.
+            Rate how much you agree or disagree with the statement{" "}
+            <em>“This passage contains no polarizing language.”</em> Select one
+            response from <strong>1 (Strongly disagree)</strong> to{" "}
+            <strong>7 (Strongly agree)</strong>.
           </li>
           <li>
-            Choose <strong>Agree</strong> when the annotation is correct or{" "}
-            <strong>Disagree</strong> when it is not.
+            Answer <strong>Yes</strong> or <strong>No</strong> to whether you
+            noticed any potentially polarizing language. If you select{" "}
+            <strong>Yes</strong>, identify the relevant words or passage and
+            briefly explain why you consider the language polarizing in the
+            required text box.
           </li>
           <li>
-            After every highlight in the article has been answered, continue to
-            the next article.
+            Complete both questions, including an explanation if you selected
+            Yes, then click <strong>Next Article</strong> to continue.
           </li>
           <li>
-            Some proposed annotations may be incorrect, so evaluate each one
-            carefully rather than agreeing automatically.
+            After the last article, answer the final confidence question and
+            click <strong>Submit</strong>. Then click{" "}
+            <strong>Return to Prolific</strong> on the thank-you screen.
           </li>
         </ol>
 
         <div className="h-4" />
 
-        <div className="rounded-lg border border-gray-200 bg-white p-3 text-left text-xs text-gray-600">
-          <p className="mb-1">
-            <span className="inline-block w-4 h-4 bg-yellow-200 align-middle mr-2 rounded-sm" />
-            Unanswered annotation
-          </p>
-          <p className="mb-1">
-            <span className="inline-block w-4 h-4 bg-green-200 align-middle mr-2 rounded-sm" />
-            Agreed
-          </p>
-          <p>
-            <span className="inline-block w-4 h-4 bg-red-200 align-middle mr-2 rounded-sm" />
-            Disagreed
-          </p>
+        <div className="rounded-lg border border-gray-200 bg-white p-3 text-left text-sm text-gray-600">
+          You can refer to the definitions in the guide on the left while
+          evaluating the language in each article.
         </div>
       </div>
 
